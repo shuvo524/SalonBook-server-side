@@ -17,9 +17,11 @@ const router = express.Router();
 const adminOnly = [authenticate, requireRole("admin")];
 
 // Validate the service fields shared by create and update. On update every
-// field is optional; on create all are required.
+// field is optional; on create all are required except status, which
+// defaults to "active" (the spec's Add/Update form includes the status).
 function validateServiceFields(body, { requireAll }) {
-  const { serviceName, category, description, price, duration } = body;
+  const { serviceName, category, description, price, duration, status } =
+    body;
   const fields = {};
 
   if (serviceName !== undefined) {
@@ -53,6 +55,12 @@ function validateServiceFields(body, { requireAll }) {
       throw httpError(400, "Duration must be a positive number of minutes.");
     }
     fields.duration = parsed;
+  }
+  if (status !== undefined) {
+    if (!["active", "inactive"].includes(status)) {
+      throw httpError(400, 'Status must be "active" or "inactive".');
+    }
+    fields.status = status;
   }
 
   if (requireAll) {
@@ -173,6 +181,9 @@ router.put(
         req.file.buffer,
         req.file.originalname
       );
+    }
+    if (Object.keys(fields).length === 0) {
+      throw httpError(400, "Nothing to update.");
     }
     const service = await Service.findByIdAndUpdate(req.params.id, fields, {
       new: true,
