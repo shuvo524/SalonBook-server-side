@@ -1,10 +1,16 @@
-// Integration test for the SalonBook server — VM ONLY, never transferred
-// to the PC. Boots the real app against an in-memory MongoDB and exercises
-// every route: auth, JWT exchange, services, appointments, payments
-// (webhook with a self-signed Stripe event), users, profile, dashboards.
-import { MongoMemoryServer } from "mongodb-memory-server";
+// Integration test for the SalonBook server. Run with `npm test`.
+// Boots the real app against an in-memory MongoDB and exercises every
+// route: auth, JWT exchange, services, appointments, payments (webhook
+// with a self-signed Stripe event), users, profile, dashboards. The first
+// run downloads a MongoDB binary (~50 MB), so it needs internet once;
+// later runs reuse the cached binary. No real keys or databases are used.
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const execFileAsync = promisify(execFile);
 const BASE = "http://127.0.0.1:5001";
@@ -50,8 +56,18 @@ function cookiesToHeader(setCookie) {
 }
 
 async function main() {
-  console.log("Starting in-memory MongoDB...");
-  const mongod = await MongoMemoryServer.create();
+  // Single-node replica set (MongoMemoryReplSet), not a standalone
+  // server: Better Auth wraps sign-up (user + account + session) in a
+  // MongoDB transaction, and transactions require a replica set.
+  // Production MongoDB Atlas is a replica set, so this matches
+  // production — a standalone memory server fails every sign-up with
+  // "Transaction numbers are only allowed on a replica set member or
+  // mongos". Note: the replSet option must go to MongoMemoryReplSet;
+  // MongoMemoryServer.create() ignores it and stays standalone.
+  console.log("Starting in-memory MongoDB (single-node replica set)...");
+  const mongod = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+  });
   const uri = mongod.getUri();
 
   process.env.MONGODB_URI = uri;
@@ -64,12 +80,12 @@ async function main() {
   process.env.STRIPE_WEBHOOK_SECRET = "whsec_testsecret123";
   process.env.NODE_ENV = "test";
 
-  const { app } = await import("/tmp/salonbook-server/src/app.js");
-  const { connectDB, disconnectDB } = await import("/tmp/salonbook-server/src/config/db.js");
-  const { Service } = await import("/tmp/salonbook-server/src/models/Service.js");
-  const { User } = await import("/tmp/salonbook-server/src/models/User.js");
-  const { Appointment } = await import("/tmp/salonbook-server/src/models/Appointment.js");
-  const { Transaction } = await import("/tmp/salonbook-server/src/models/Transaction.js");
+  const { app } = await import("./src/app.js");
+  const { connectDB, disconnectDB } = await import("./src/config/db.js");
+  const { Service } = await import("./src/models/Service.js");
+  const { User } = await import("./src/models/User.js");
+  const { Appointment } = await import("./src/models/Appointment.js");
+  const { Transaction } = await import("./src/models/Transaction.js");
 
   await connectDB();
   const server = app.listen(5001);
@@ -81,7 +97,7 @@ async function main() {
     let r = await api("/");
     check("GET / returns 200", r.status === 200 && r.json?.success === true);
     r = await api("/api/health");
-    check("GET /api/health returns ok", r.status === 200 && r.json?.data?.status === "ok" || r.json?.status === "ok");
+    check("GET /api/health returns ok", r.status === 200 && r.json?.data?.status === "ok");
     r = await api("/api/meta/time-slots");
     check("GET /api/meta/time-slots returns 11 slots", r.status === 200 && r.json?.data?.timeSlots?.length === 11);
     r = await api("/api/meta/categories");
@@ -110,6 +126,23 @@ async function main() {
     check("Bad JWT -> 401", r.status === 401);
     r = await api("/api/profile/me", { cookie: customerCookie });
     check("Session cookie alone also authenticates", r.status === 200);
+
+    // --- Password rules enforced by the SERVER --------------------------
+    r = await api("/api/auth/sign-up/email", {
+      method: "POST",
+      body: { name: "Weak One", email: "weak1@test.com", password: "test123" },
+    });
+    check("Password without uppercase -> 400", r.status === 400, `got ${r.status}: ${r.text.slice(0, 200)}`);
+    r = await api("/api/auth/sign-up/email", {
+      method: "POST",
+      body: { name: "Weak Two", email: "weak2@test.com", password: "TEST123" },
+    });
+    check("Password without lowercase -> 400", r.status === 400, `got ${r.status}: ${r.text.slice(0, 200)}`);
+    r = await api("/api/auth/sign-up/email", {
+      method: "POST",
+      body: { name: "Weak Three", email: "weak3@test.com", password: "Test1" },
+    });
+    check("Password shorter than 6 chars -> 400", r.status === 400, `got ${r.status}: ${r.text.slice(0, 200)}`);
 
     // --- Role escalation attempt ---------------------------------------
     r = await api("/api/auth/sign-up/email", {
@@ -196,6 +229,8 @@ async function main() {
     check("Duplicate slot booking -> 409", r.status === 409);
     r = await api("/api/appointments", { method: "POST", token: customerToken, body: { serviceId: String(svcA._id), appointmentDate: "2020-01-01", timeSlot: "10:00 AM" } });
     check("Past date -> 400", r.status === 400);
+    r = await api("/api/appointments", { method: "POST", token: customerToken, body: { serviceId: String(svcA._id), appointmentDate: "2026-13-99", timeSlot: "10:00 AM" } });
+    check("Impossible calendar date -> 400", r.status === 400);
     r = await api("/api/appointments", { method: "POST", token: customerToken, body: { serviceId: String(svcA._id), appointmentDate: future, timeSlot: "03:33 AM" } });
     check("Invalid slot -> 400", r.status === 400);
     r = await api("/api/appointments", { method: "POST", token: customerToken, body: { serviceId: String(svcInactive._id), appointmentDate: future, timeSlot: "11:00 AM" } });
@@ -247,7 +282,11 @@ async function main() {
       type: "checkout.session.completed",
       data: { object: { id: "cs_test_123", object: "checkout.session", amount_total: 5000, currency: "usd", payment_status: "paid", metadata: { appointmentId: appt2.id, customerId: String(customer._id) } } },
     });
-    const sig = stripe.webhooks.generateTestHeaderString(payload, "whsec_testsecret123");
+    // Stripe SDK v17 takes one options object, not (payload, secret).
+    const sig = stripe.webhooks.generateTestHeaderString({
+      payload,
+      secret: "whsec_testsecret123",
+    });
     const whRes = await fetch(`${BASE}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json", "stripe-signature": sig }, body: payload });
     check("Verified webhook accepted (200)", whRes.status === 200, `got ${whRes.status}`);
     const paidAppt = await Appointment.findById(appt2.id).lean();
@@ -266,6 +305,30 @@ async function main() {
     check("Admin lists transactions", r.status === 200 && r.json?.data?.transactions?.length === 1);
     r = await api("/api/payments/transactions", { token: customerToken });
     check("Customer cannot list transactions (403)", r.status === 403);
+    r = await api("/api/payments/transactions/my", { token: customerToken });
+    check("Customer lists own payment history", r.status === 200 && r.json?.data?.transactions?.length === 1 && r.json.data.transactions[0].status === "paid");
+    r = await api("/api/payments/transactions/my", { token: otherToken });
+    check("Other customer sees no transactions of theirs", r.status === 200 && r.json?.data?.transactions?.length === 0);
+    r = await api("/api/payments/transactions/my", { token: adminToken });
+    check("Admin cannot use customer payment history (403)", r.status === 403);
+
+    // Expired checkout session without a customerId in metadata: the
+    // webhook must resolve the owner from the appointment and record a
+    // failed transaction instead of crashing (500).
+    const expiredPayload = JSON.stringify({
+      id: "evt_test_expired",
+      object: "event",
+      type: "checkout.session.expired",
+      data: { object: { id: "cs_test_expired", object: "checkout.session", amount_total: 2000, currency: "usd", metadata: { appointmentId: apptPending.id } } },
+    });
+    const expiredSig = stripe.webhooks.generateTestHeaderString({
+      payload: expiredPayload,
+      secret: "whsec_testsecret123",
+    });
+    const expiredRes = await fetch(`${BASE}/api/payments/webhook`, { method: "POST", headers: { "Content-Type": "application/json", "stripe-signature": expiredSig }, body: expiredPayload });
+    check("Expired-session webhook accepted (200)", expiredRes.status === 200, `got ${expiredRes.status}`);
+    const failedTxns = await Transaction.find({ stripeSessionId: "cs_test_expired" }).lean();
+    check("Expired session records one failed transaction", failedTxns.length === 1 && failedTxns[0].status === "failed" && String(failedTxns[0].customerId) === String(customer._id));
 
     // Admin cancels the paid+confirmed appointment; payment stays paid.
     r = await api(`/api/appointments/${appt2.id}/cancel-admin`, { method: "PATCH", token: adminToken });
@@ -294,6 +357,10 @@ async function main() {
     check("Profile update with role -> 400", r.status === 400);
     r = await api("/api/profile/me", { method: "PATCH", token: customerToken, body: { name: "New Name", phone: "01700000000" } });
     check("Profile update works", r.status === 200 && r.json?.data?.user?.name === "New Name" && r.json?.data?.user?.phone === "01700000000");
+    r = await api("/api/profile/me", { method: "PATCH", token: customerToken, body: { image: "not-a-url" } });
+    check("Profile image must be a valid URL (400)", r.status === 400);
+    r = await api("/api/profile/me", { method: "PATCH", token: customerToken, body: { image: "https://example.com/avatar.jpg" } });
+    check("Profile image URL update works", r.status === 200 && r.json?.data?.user?.image === "https://example.com/avatar.jpg");
 
     // --- Dashboards --------------------------------------------------------
     r = await api("/api/dashboard/customer", { token: customerToken });
@@ -306,6 +373,12 @@ async function main() {
     // --- Service status toggle + delete rules -------------------------------
     r = await api(`/api/services/${svcB._id}/status`, { method: "PATCH", token: adminToken, body: { status: "inactive" } });
     check("Admin deactivates service", r.status === 200 && r.json?.data?.service?.status === "inactive");
+    r = await api(`/api/services/${svcB._id}`, { method: "PUT", token: adminToken, body: { status: "active", price: 22 } });
+    check("PUT updates status and price", r.status === 200 && r.json?.data?.service?.status === "active" && r.json?.data?.service?.price === 22, `got ${r.status}: ${r.text.slice(0, 200)}`);
+    r = await api(`/api/services/${svcB._id}`, { method: "PUT", token: adminToken, body: {} });
+    check("PUT with no changes -> 400", r.status === 400);
+    r = await api(`/api/services/${svcB._id}`, { method: "PUT", token: adminToken, body: { price: -5 } });
+    check("PUT with negative price -> 400", r.status === 400);
     r = await api(`/api/services/${svcB._id}`, { method: "DELETE", token: adminToken });
     check("Delete blocked while service has active appointments (400)", r.status === 400);
     const svcFree = await Service.create({ serviceName: "Free Service", category: "Makeup", description: "D", price: 10, duration: 15, image: "https://example.com/d.jpg", status: "active" });
@@ -314,11 +387,11 @@ async function main() {
 
     // --- Scripts (seed + promote-admin) --------------------------------------
     const scriptEnv = { ...process.env, MONGODB_URI: uri };
-    const seedOut = await execFileAsync("node", ["scripts/seed-services.js"], { cwd: "/tmp/salonbook-server", env: scriptEnv });
+    const seedOut = await execFileAsync("node", ["scripts/seed-services.js"], { cwd: projectRoot, env: scriptEnv });
     check("Seed script runs (services already exist -> skips)", /already exist/.test(seedOut.stdout), seedOut.stdout.slice(0, 200));
-    const seedForce = await execFileAsync("node", ["scripts/seed-services.js", "--force"], { cwd: "/tmp/salonbook-server", env: scriptEnv });
+    const seedForce = await execFileAsync("node", ["scripts/seed-services.js", "--force"], { cwd: projectRoot, env: scriptEnv });
     check("Seed --force inserts 8 services", /Seeded 8 services/.test(seedForce.stdout), seedForce.stdout.slice(0, 200));
-    const promoteOut = await execFileAsync("node", ["scripts/promote-admin.js", "other@test.com"], { cwd: "/tmp/salonbook-server", env: scriptEnv });
+    const promoteOut = await execFileAsync("node", ["scripts/promote-admin.js", "other@test.com"], { cwd: projectRoot, env: scriptEnv });
     check("promote-admin script works", /is now an admin/.test(promoteOut.stdout), promoteOut.stdout.slice(0, 200));
     const other = await User.findOne({ email: "other@test.com" }).lean();
     check("Promoted user has admin role in DB", other?.role === "admin");
