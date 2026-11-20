@@ -1,7 +1,7 @@
 import express from "express";
 import { Appointment } from "../models/Appointment.js";
 import { Transaction } from "../models/Transaction.js";
-import { getStripe } from "../lib/stripe.js";
+import { getStripe, isStripeConfigured } from "../lib/stripe.js";
 import { config, primaryClientOrigin } from "../config/env.js";
 import { authenticate, requireRole } from "../middleware/auth.js";
 import {
@@ -105,6 +105,44 @@ router.get(
   })
 );
 
+// Create a transaction record, idempotently. Returns the record, or null
+// when one already exists for this Stripe session — the pre-check plus
+// this duplicate-key catch together make re-deliveries and concurrent
+// deliveries of the same event safe.
+async function recordTransaction(data) {
+  const existing = await Transaction.findOne({
+    stripeSessionId: data.stripeSessionId,
+  });
+  if (existing) return null;
+  try {
+    return await Transaction.create(data);
+  } catch (error) {
+    if (error?.code === 11000) return null; // lost a race, already recorded
+    throw error;
+  }
+}
+
+// GET /api/payments/transactions/my — customer. Their own payment
+// history, newest first. Same shape as the admin list, scoped to the
+// caller — customers can only ever see their own transactions.
+router.get(
+  "/transactions/my",
+  authenticate,
+  requireRole("customer"),
+  asyncHandler(async (req, res) => {
+    const transactions = await Transaction.find({
+      customerId: req.user.id,
+    })
+      .populate({
+        path: "appointmentId",
+        select: "appointmentDate timeSlot servicePrice status",
+        populate: { path: "serviceId", select: "serviceName" },
+      })
+      .sort({ createdAt: -1 });
+    return sendSuccess(res, { transactions });
+  })
+);
+
 // POST /api/payments/webhook — Stripe. Mounted separately in app.js with a
 // raw body, BEFORE express.json().
 //
@@ -114,12 +152,12 @@ router.get(
 // appointment paid and creates the transaction. Re-deliveries of the same
 // event are ignored (transactions are unique per Stripe session id).
 export async function stripeWebhookHandler(req, res) {
-  const stripe = getStripe();
-  if (!stripe || !config.stripeWebhookSecret) {
+  if (!isStripeConfigured()) {
     return res
       .status(503)
       .json({ success: false, message: "Stripe webhook is not configured." });
   }
+  const stripe = getStripe();
 
   const signature = req.headers["stripe-signature"];
   let event;
@@ -140,25 +178,23 @@ export async function stripeWebhookHandler(req, res) {
       const session = event.data.object;
       const { appointmentId, customerId } = session.metadata || {};
 
-      if (session.payment_status === "paid" && appointmentId) {
-        // Idempotency: ignore this event if we already recorded it.
-        const existing = await Transaction.findOne({
-          stripeSessionId: session.id,
-        });
-        if (!existing) {
-          const appointment = await Appointment.findById(appointmentId);
-          if (appointment) {
-            appointment.paymentStatus = "paid";
-            await appointment.save();
-            await Transaction.create({
-              appointmentId: appointment._id,
-              customerId: customerId || String(appointment.customerId),
-              amount: (session.amount_total || 0) / 100,
-              currency: session.currency || "usd",
-              stripeSessionId: session.id,
-              status: "paid",
-            });
-          }
+      if (
+        session.payment_status === "paid" &&
+        appointmentId &&
+        isValidObjectId(appointmentId)
+      ) {
+        const appointment = await Appointment.findById(appointmentId);
+        if (appointment) {
+          appointment.paymentStatus = "paid";
+          await appointment.save();
+          await recordTransaction({
+            appointmentId: appointment._id,
+            customerId: customerId || String(appointment.customerId),
+            amount: (session.amount_total || 0) / 100,
+            currency: session.currency || "usd",
+            stripeSessionId: session.id,
+            status: "paid",
+          });
         }
       }
     }
@@ -166,14 +202,19 @@ export async function stripeWebhookHandler(req, res) {
     if (event.type === "checkout.session.expired") {
       const session = event.data.object;
       const { appointmentId, customerId } = session.metadata || {};
-      if (appointmentId) {
-        const existing = await Transaction.findOne({
-          stripeSessionId: session.id,
-        });
-        if (!existing) {
-          await Transaction.create({
+      if (appointmentId && isValidObjectId(appointmentId)) {
+        // The customer id must come from somewhere real: metadata first,
+        // the appointment second. Without one there is no valid record
+        // to write, so the event is acknowledged and skipped.
+        const ownerId =
+          customerId ||
+          (await Appointment.findById(appointmentId).then((a) =>
+            a ? String(a.customerId) : null
+          ));
+        if (ownerId) {
+          await recordTransaction({
             appointmentId,
-            customerId: customerId || "",
+            customerId: ownerId,
             amount: (session.amount_total || 0) / 100,
             currency: session.currency || "usd",
             stripeSessionId: session.id,
