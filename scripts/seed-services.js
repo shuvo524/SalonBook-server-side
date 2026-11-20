@@ -49,7 +49,11 @@ const SERVICES = [
       "Deep cleansing, gentle exfoliation, hydration mask and a soothing face massage.",
     price: 55,
     duration: 60,
-    image: image("photo-1570172619644-dfd03ed1350b"),
+    // NOTE: the previous photo (photo-1570172619644-dfd03ed1350b) was
+    // removed from Unsplash and returns HTTP 404, so the service image
+    // never loaded. Replaced 2026-11-20 with a verified facial-treatment
+    // photo (Camille Brodard via Unsplash).
+    image: image("photo-1540555700478-4be289fbecef"),
   },
   {
     serviceName: "Bridal Makeup",
