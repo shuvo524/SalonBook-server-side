@@ -59,8 +59,18 @@ router.patch(
         req.file.originalname
       );
     } else if (rest.image !== undefined) {
-      if (typeof rest.image !== "string" || !rest.image.trim()) {
-        throw httpError(400, "Image must be a valid URL.");
+      // An image URL must be a real http(s) URL, not arbitrary text.
+      let validUrl = false;
+      if (typeof rest.image === "string" && rest.image.trim()) {
+        try {
+          const parsed = new URL(rest.image.trim());
+          validUrl = parsed.protocol === "http:" || parsed.protocol === "https:";
+        } catch {
+          validUrl = false;
+        }
+      }
+      if (!validUrl) {
+        throw httpError(400, "Image must be a valid image URL.");
       }
       updates.image = rest.image.trim();
     }
