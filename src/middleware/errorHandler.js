@@ -8,10 +8,14 @@ export function notFound(req, res) {
 }
 
 // Central error handler: every error in the API becomes one JSON shape.
+// Only genuine server errors (5xx) are logged — expected client mistakes
+// (bad input, wrong role, missing record) are answered, not logged, so
+// the log stays a list of things that actually need fixing.
 export function errorHandler(error, req, res, next) {
   if (res.headersSent) return next(error);
 
-  if (process.env.NODE_ENV !== "test") {
+  const status = error.status || 500;
+  if (status >= 500 && process.env.NODE_ENV !== "test") {
     console.error(error);
   }
 
@@ -59,7 +63,6 @@ export function errorHandler(error, req, res, next) {
     return res.status(400).json({ success: false, message });
   }
 
-  const status = error.status || 500;
   return res.status(status).json({
     success: false,
     message: error.message || "Something went wrong. Please try again.",
