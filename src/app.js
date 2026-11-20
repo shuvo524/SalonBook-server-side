@@ -40,11 +40,7 @@ app.all("/api/auth/*", toNodeHandler(auth));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    message: "SalonBook server is running.",
-    docs: "See API_CONTRACT.md for the endpoint reference.",
-  });
+  res.send("SalonBook server is running");
 });
 
 app.get("/api/health", (req, res) => {
