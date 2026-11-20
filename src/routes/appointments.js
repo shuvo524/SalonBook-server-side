@@ -6,6 +6,7 @@ import { authenticate, requireRole } from "../middleware/auth.js";
 import {
   asyncHandler,
   httpError,
+  isValidDateString,
   isValidObjectId,
   sendSuccess,
   todayDhaka,
@@ -31,8 +32,11 @@ router.post(
     if (!serviceId || !isValidObjectId(serviceId)) {
       throw httpError(400, "A valid service is required.");
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(appointmentDate || "")) {
-      throw httpError(400, "Appointment date must be YYYY-MM-DD.");
+    if (!isValidDateString(appointmentDate)) {
+      throw httpError(
+        400,
+        "Appointment date must be a valid date (YYYY-MM-DD)."
+      );
     }
     if (appointmentDate < todayDhaka()) {
       throw httpError(400, "Appointment date cannot be in the past.");
@@ -63,14 +67,29 @@ router.post(
       );
     }
 
-    const appointment = await Appointment.create({
-      serviceId: service._id,
-      customerId: req.user.id,
-      appointmentDate,
-      timeSlot,
-      message: typeof message === "string" ? message.trim() : "",
-      servicePrice: service.price,
-    });
+    // The findOne check above gives the friendly error; the unique partial
+    // index on the model is the race-safe backstop — if two requests for
+    // the same slot arrive at once, the loser hits a duplicate-key error
+    // here and gets the same 409.
+    let appointment;
+    try {
+      appointment = await Appointment.create({
+        serviceId: service._id,
+        customerId: req.user.id,
+        appointmentDate,
+        timeSlot,
+        message: typeof message === "string" ? message.trim() : "",
+        servicePrice: service.price,
+      });
+    } catch (error) {
+      if (error?.code === 11000) {
+        throw httpError(
+          409,
+          "This time slot is already booked for that service. Please choose another slot."
+        );
+      }
+      throw error;
+    }
 
     await appointment.populate("serviceId", serviceFields);
     return sendSuccess(res, { appointment }, 201);

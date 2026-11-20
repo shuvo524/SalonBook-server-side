@@ -35,13 +35,19 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Speeds up the duplicate-booking check (service + date + slot + status).
-appointmentSchema.index({
-  serviceId: 1,
-  appointmentDate: 1,
-  timeSlot: 1,
-  status: 1,
-});
+// Duplicate-booking guard, enforced by the database itself: one service
+// can have only one ACTIVE (pending or confirmed) booking per date + slot.
+// The route also checks first for a friendly error message, but only this
+// unique partial index is race-safe — two simultaneous requests for the
+// same slot cannot both slip through. Cancelled bookings do not block
+// the slot, so it can be booked again after a cancellation.
+appointmentSchema.index(
+  { serviceId: 1, appointmentDate: 1, timeSlot: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: { $in: ["pending", "confirmed"] } },
+  }
+);
 
 appointmentSchema.set("toJSON", {
   versionKey: false,

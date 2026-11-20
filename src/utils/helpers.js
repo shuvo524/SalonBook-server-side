@@ -28,6 +28,19 @@ export function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// True only for a real calendar date in YYYY-MM-DD form — the format
+// regex alone would accept impossible dates such as 2026-13-99.
+export function isValidDateString(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
 // Today's date (YYYY-MM-DD) in the salon's timezone, Asia/Dhaka. Used to
 // reject appointment dates in the past.
 export function todayDhaka() {
