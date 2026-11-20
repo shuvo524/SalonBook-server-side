@@ -46,8 +46,8 @@ Stripe). The client is a separate Next.js app.
 ## Installation Instructions
 
 ```bash
-git clone <server-repository-url>
-cd salonbook-server-site
+git clone https://github.com/shuvo524/SalonBook-server-side.git
+cd SalonBook-server-side
 npm install
 ```
 
@@ -84,7 +84,15 @@ npm install
    (There is intentionally no way to register an admin from the website.)
 
 The server runs on `http://localhost:5000` by default. Check
-`GET /api/health` — it answers `{ "success": true, "status": "ok" }`.
+`GET /api/health` — it answers
+`{ "success": true, "data": { "status": "ok" } }`.
+
+Run the integration test suite (boots the real app against an
+in-memory MongoDB — no real database or keys needed):
+
+```bash
+npm test
+```
 
 ## Required Environment Variables
 
@@ -131,5 +139,5 @@ role requirements, request bodies and response shapes.
 
 ## Repository Links
 
-- Client repository: <!-- Add the client repo URL here. -->
-- Server repository: <!-- Add this repo's URL here. -->
+- Client repository: https://github.com/shuvo524/SalonBook-client-side
+- Server repository: https://github.com/shuvo524/SalonBook-server-side

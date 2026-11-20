@@ -26,10 +26,11 @@ All resources use `id` (never `_id`) in responses. Dates are
 
 1. **Sign up** — `POST /api/auth/sign-up/email`
    `{ name, email, password, image? }`. Password rules: minimum 6
-   characters, at least one uppercase and one lowercase letter (enforced
-   by the sign-up form; the server enforces the 6-character minimum).
-   Every new account is a `customer` — sending `role: "admin"` is
-   rejected. A session cookie is set on success.
+   characters, at least one uppercase and one lowercase letter —
+   enforced by the server (a weak password is rejected with `400`),
+   so the sign-up form must show the same rules. Every new account is
+   a `customer` — sending `role: "admin"` is rejected. A session
+   cookie is set on success.
 2. **Sign in** — `POST /api/auth/sign-in/email` `{ email, password }`.
    Sets the session cookie.
 3. **Google sign-in** — via the Better Auth client
@@ -62,7 +63,8 @@ but the Bearer token is the recommended way.
 ## Public endpoints
 
 ### `GET /`
-Health message. `GET /api/health` returns `{ success: true, status: "ok" }`.
+Health message. `GET /api/health` returns
+`{ success: true, data: { status: "ok" } }`.
 
 ### `GET /api/meta/time-slots`
 `{ timeSlots: ["09:00 AM", "10:00 AM", ...] }` — the predefined booking
@@ -103,11 +105,14 @@ Every service including inactive ones: `{ services: [...] }`.
 Multipart form (`Content-Type: multipart/form-data`):
 `serviceName`, `category`, `description`, `price` (positive number),
 `duration` (positive integer, minutes), `image` (file — required; the
-server uploads it to ImgBB). Returns `201` with `{ service }`.
+server uploads it to ImgBB), `status` (optional, `"active"` default or
+`"inactive"`). Returns `201` with `{ service }`.
 
 ### `PUT /api/services/:id`
-Multipart form; any field may be updated. A new `image` file replaces
-the old one; without a file the image stays. Returns `{ service }`.
+Multipart form (or JSON for field-only updates); any field may be
+updated, including `status` (`"active"` | `"inactive"`). A new `image`
+file replaces the old one; without a file the image stays. Returns
+`{ service }`. `400` when nothing is sent to update.
 
 ### `PATCH /api/services/:id/status`
 JSON `{ status: "active" | "inactive" }`. Returns `{ service }`.
@@ -196,6 +201,10 @@ should ever hit this endpoint.
 
 ### `GET /api/payments/transactions` — admin
 All payment records, newest first. Optional `?status=paid|failed`.
+
+### `GET /api/payments/transactions/my` — customer
+The signed-in customer's own payment history, newest first — same
+record shape as the admin list, scoped to the caller.
 
 ```json
 { "id": "...", "appointmentId": { "id": "...", "appointmentDate": "...",
