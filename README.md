@@ -135,7 +135,9 @@ role requirements, request bodies and response shapes.
 
 ## Live Website Link
 
-<!-- Add the deployed client URL here after deployment. -->
+Live website: https://salonbook-bd.vercel.app/
+
+Live API server: https://salonbook-server-mu.vercel.app/
 
 ## Repository Links
 
